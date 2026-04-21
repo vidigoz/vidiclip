@@ -1918,34 +1918,51 @@ renderBg();
 
 // ════ AUTOLOAD ASSETS ════
 async function autoloadAssets() {
+  const BASE = 'http://localhost:3747';
+
+  // Wait for server with retries
+  let serverOk = false;
+  for (let i = 0; i < 5; i++) {
+    try { await fetch(`${BASE}/ping`); serverOk = true; break; }
+    catch(e) { await new Promise(r => setTimeout(r, 800)); }
+  }
+  if (!serverOk) { console.log('Autoload: server not available'); return; }
+
+  // Video — set src directly to server URL so browser streams it (no full-blob download)
   try {
-    await fetch('http://localhost:3747/ping');
-    const vidRes = await fetch('http://localhost:3747/asset?file=personaje.mp4');
-    if (vidRes.ok) {
-      const blob = await vidRes.blob();
-      charVideo.src = URL.createObjectURL(blob);
-      charVideo.load(); charVideo.play().catch(()=>{});
+    const check = await fetch(`${BASE}/asset?file=personaje.mp4`, { method: 'HEAD' });
+    if (check.ok) {
+      charVideo.src = `${BASE}/asset?file=personaje.mp4`;
+      charVideo.load();
+      charVideo.play().catch(() => {});
       APP.charLoaded = true;
       document.getElementById('charLoaded').classList.add('v');
       document.getElementById('charName').textContent = 'personaje.mp4';
       document.getElementById('canvasPh').style.display = 'none';
       startRenderLoop();
     }
-    const musRes = await fetch('http://localhost:3747/asset?file=musica.mp3');
-    if (musRes.ok) {
-      const buf = await musRes.arrayBuffer();
+  } catch(e) { console.warn('Autoload video failed:', e); }
+
+  // Audio — try both lowercase and uppercase extension
+  const audioFiles = ['musica.mp3', 'musica.MP3', 'musica.m4a', 'musica.aac', 'musica.wav'];
+  for (const filename of audioFiles) {
+    try {
+      const check = await fetch(`${BASE}/asset?file=${filename}`, { method: 'HEAD' });
+      if (!check.ok) continue;
+      const buf = await (await fetch(`${BASE}/asset?file=${filename}`)).arrayBuffer();
       APP.musicBuffer = buf;
-      const blob = new Blob([buf], { type: 'audio/mpeg' });
+      const blob = new Blob([buf], { type: check.headers.get('content-type') || 'audio/mpeg' });
       bgAudio.src = URL.createObjectURL(blob);
       bgAudio.load();
       APP.musicLoaded = true;
       document.getElementById('musicLoaded').classList.add('v');
-      document.getElementById('musicName').textContent = 'musica.mp3';
-      bgAudio.play().catch(()=>{});
-    }
-  } catch(e) { console.log('Autoload no disponible — carga manual.'); }
+      document.getElementById('musicName').textContent = filename;
+      bgAudio.play().catch(() => {});
+      break;
+    } catch(e) { console.warn(`Autoload audio ${filename} failed:`, e); }
+  }
 }
-setTimeout(autoloadAssets, 800);
+setTimeout(autoloadAssets, 600);
 
 // ════ TABS ════
 function switchRTab(tab) {

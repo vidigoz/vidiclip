@@ -118,24 +118,23 @@ http.createServer(async (req, res) => {
     return;
   }
 
-  // GET /asset?file=personaje.mp4  — serve local asset files
-  if (url.pathname === '/asset' && req.method === 'GET') {
+  // GET/HEAD /asset?file=personaje.mp4  — serve local asset files
+  if (url.pathname === '/asset' && (req.method === 'GET' || req.method === 'HEAD')) {
     const filename = url.searchParams.get('file');
     if (!filename || filename.includes('..') || filename.includes('/')) {
       res.writeHead(400); res.end('Invalid filename'); return;
     }
     const path = require('path');
     const fs2  = require('fs');
-    // Look in same directory as server.js
     const filePath = path.join(__dirname, filename);
     if (!fs2.existsSync(filePath)) {
-      console.log(`Asset not found: ${filePath}`);
-      res.writeHead(404); res.end('Not found'); return;
+      res.writeHead(404, { 'Access-Control-Allow-Origin': '*' }); res.end('Not found'); return;
     }
     const ext  = path.extname(filename).toLowerCase();
-    const mime = { '.mp4': 'video/mp4', '.mp3': 'audio/mpeg', '.webm': 'video/webm', '.png': 'image/png' }[ext] || 'application/octet-stream';
+    const mime = { '.mp4': 'video/mp4', '.mp3': 'audio/mpeg', '.mp3': 'audio/mpeg', '.webm': 'video/webm', '.png': 'image/png', '.m4a': 'audio/mp4', '.aac': 'audio/aac', '.wav': 'audio/wav' }[ext] || 'application/octet-stream';
     const stat = fs2.statSync(filePath);
     res.writeHead(200, { 'Content-Type': mime, 'Content-Length': stat.size, 'Access-Control-Allow-Origin': '*' });
+    if (req.method === 'HEAD') { res.end(); return; }
     fs2.createReadStream(filePath).pipe(res);
     console.log(`📁 Serving asset: ${filename} (${(stat.size/1024/1024).toFixed(1)} MB)`);
     return;
