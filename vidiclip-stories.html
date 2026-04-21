@@ -623,11 +623,26 @@ input[type=datetime-local].fi { color-scheme: dark; }
         </div>
       </div>
 
-      <div style="margin-top:8px;">
-        <div style="font-size:10px;color:var(--muted);line-height:1.6;">
-          ℹ El video se exporta en MP4 o WebM según el navegador.<br>
-          Para publicar en redes se sube automáticamente al storage configurado.
-        </div>
+      <!-- Export options -->
+      <div style="margin-top:10px;padding:10px;background:var(--s2);border:1px solid var(--border);border-radius:9px;">
+        <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">Qué exportar</div>
+
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;margin-bottom:7px;">
+          <input type="checkbox" id="chkExportFull" checked style="accent-color:var(--accent);width:14px;height:14px;cursor:pointer;">
+          <span style="font-size:12px;font-weight:600;color:var(--muted2);">Video <strong style="color:var(--text);">completo</strong> (duración del audio)</span>
+        </label>
+
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;margin-bottom:7px;">
+          <input type="checkbox" id="chkExportShort" checked style="accent-color:var(--accent);width:14px;height:14px;cursor:pointer;">
+          <span style="font-size:12px;font-weight:600;color:var(--muted2);">Video <strong style="color:var(--text);">corto</strong> —</span>
+          <input type="number" id="exportShortSecs" value="21" min="1" max="300" style="width:48px;background:var(--s3);border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:11px;font-weight:600;padding:2px 6px;text-align:center;">
+          <span style="font-size:11px;color:var(--muted);">seg</span>
+        </label>
+
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;">
+          <input type="checkbox" id="chkExportCover" checked style="accent-color:var(--accent);width:14px;height:14px;cursor:pointer;">
+          <span style="font-size:12px;font-weight:600;color:var(--muted2);"><strong style="color:var(--text);">Portada</strong> PNG 1080×1920</span>
+        </label>
       </div>
     </div>
 
@@ -1359,170 +1374,164 @@ async function exportVideo() {
     return;
   }
 
+  const doFull  = document.getElementById('chkExportFull').checked;
+  const doShort = document.getElementById('chkExportShort').checked;
+  const doCover = document.getElementById('chkExportCover').checked;
+  const shortSecs = Math.max(1, +document.getElementById('exportShortSecs').value || 21);
+
+  if (!doFull && !doShort && !doCover) {
+    toast('Selecciona al menos una opción para exportar', 'error');
+    return;
+  }
+
+  const titleSlug = (story?.title || 'historia').replace(/[^a-z0-9]/gi, '_').toLowerCase();
+
   const epw = document.getElementById('exportProgress');
   const epf = document.getElementById('exportFill');
   const epl = document.getElementById('exportLbl');
   epw.style.display = 'flex';
-  epf.style.width   = '0%';
+  epf.style.width = '0%';
 
   const FPS = 30;
 
-  // Duration = audio length if loaded, else character video length, else 15s
-  let DURATION = (APP.charLoaded && charVideo.duration > 0) ? charVideo.duration : 15;
-
-  // Export at full 1080x1920
-  const expW = 1080;
-  const expH = 1920;
-
-  const expCanvas = document.createElement('canvas');
-  expCanvas.width  = expW;
-  expCanvas.height = expH;
-  const expCtx = expCanvas.getContext('2d');
-
-  // captureStream(FPS) = browser samples canvas at exactly FPS rate → correct output duration
-  const stream = expCanvas.captureStream(FPS);
-  let ms = stream;
-
-  // Add audio — decode to get exact duration, then set up for recording
-  let audioCtx = null;
+  // Resolve audio duration once — used by all video exports
+  let audioDuration = (APP.charLoaded && charVideo.duration > 0) ? charVideo.duration : 15;
+  let sharedAudioBuffer = null;
   if (APP.musicLoaded && APP.musicBuffer) {
     try {
-      audioCtx = new AudioContext();
-      const dest = audioCtx.createMediaStreamDestination();
-      // slice() to get a fresh copy — decodeAudioData detaches the buffer
-      const dec  = await audioCtx.decodeAudioData(APP.musicBuffer.slice(0));
-      DURATION = dec.duration; // audio drives the export duration
-      const src  = audioCtx.createBufferSource();
-      src.buffer = dec;
-      src.loop   = false; // play once — export stops when we've rendered DURATION seconds
-      src.start(0);
-      src.connect(dest);
-      ms = new MediaStream([...stream.getTracks(), ...dest.stream.getTracks()]);
-    } catch(e) {
-      console.warn('Audio export failed:', e);
-    }
+      const tmpCtx = new AudioContext();
+      const dec = await tmpCtx.decodeAudioData(APP.musicBuffer.slice(0));
+      audioDuration = dec.duration;
+      sharedAudioBuffer = dec; // reuse decoded buffer
+      await tmpCtx.close();
+    } catch(e) { console.warn('Audio duration decode failed:', e); }
   }
 
-  const TOTAL = Math.ceil(DURATION * FPS);
-
-  // Try MP4 (Chrome 130+), then VP9, then VP8
-  const mp4Ok = MediaRecorder.isTypeSupported('video/mp4;codecs=avc1');
-  const vp9Ok = MediaRecorder.isTypeSupported('video/webm;codecs=vp9');
-  const mime   = mp4Ok ? 'video/mp4;codecs=avc1' : vp9Ok ? 'video/webm;codecs=vp9' : 'video/webm';
-  const ext    = mp4Ok ? 'mp4' : 'webm';
-
-  const rec    = new MediaRecorder(ms, { mimeType: mime, videoBitsPerSecond: 8_000_000 });
-  const chunks = [];
-  rec.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
-
-  rec.onstop = async () => {
-    if (audioCtx) audioCtx.close().catch(() => {});
-    if (APP.charLoaded) { charVideo.loop = false; charVideo.pause(); }
-    startRenderLoop(); // resume preview render loop
-    const blob = new Blob(chunks, { type: mime });
-    const titleSlug = (story?.title || 'historia').replace(/[^a-z0-9]/gi, '_').toLowerCase();
-    const a = document.createElement('a');
-    a.href     = URL.createObjectURL(blob);
-    a.download = `vidiclip_${titleSlug}.${ext}`;
-    a.click();
-    epw.style.display = 'none';
-    APP.exportedBlob  = blob;
-    APP.exportedMime  = mime;
-    APP.exportedTitle = titleSlug;
-    await autoExportCover(titleSlug);
-
-    // Update Notion if "Programado" checkbox is checked
-    const chkSchedule = document.getElementById('chkScheduleExport');
-    if (chkSchedule?.checked && story?.id) {
-      const schedDate = document.getElementById('scheduleExportDate').value;
-      try {
-        await updateNotionStatus(story.id, 'Programado', schedDate || null, 'Fecha programado');
-        toast(`Video exportado ✓ (${ext.toUpperCase()}) — Notion actualizado`, 'success');
-      } catch(e) {
-        // warnings = partial success (e.g. date saved but status option missing)
-        const isWarning = e.message.includes('agrégalo manualmente') || e.message.includes('verifica');
-        toast(`Video exportado ✓ — Notion: ${e.message}`, isWarning ? '' : 'error');
-        console.warn('Notion update warning:', e.message);
-      }
-    } else {
-      toast(`Video + portada exportados ✓ (${ext.toUpperCase()})`, 'success');
-    }
-  };
-
-  // Pre-create chroma offscreen canvas (reused each frame)
-  const chromaOff = document.createElement('canvas');
-  const chromaOffCtx = chromaOff.getContext('2d', { willReadFrequently: true });
-
-  // Pause the preview render loop — it runs renderChroma() at 60fps which would
-  // saturate the main thread alongside the export loop and starve the video decoder
+  // Pause preview render loop for the entire export session
   if (APP.animFrame) { cancelAnimationFrame(APP.animFrame); APP.animFrame = null; }
+  if (APP.charLoaded) { charVideo.onended = null; charVideo.loop = true; charVideo.currentTime = 0; charVideo.play().catch(() => {}); }
 
-  // loop=true lets the browser handle looping natively — no onended race conditions
-  if (APP.charLoaded) {
-    charVideo.onended = null;
-    charVideo.loop = true;
-    charVideo.currentTime = 0;
-    charVideo.play().catch(() => {});
-  }
+  // ── helper: record one video clip of a given duration ──────────────────
+  async function doVideoExport(duration, filenameSuffix, labelPrefix, isFullVideo) {
+    return new Promise(async (resolve) => {
+      const expW = 1080, expH = 1920;
+      const expCanvas = document.createElement('canvas');
+      expCanvas.width = expW; expCanvas.height = expH;
+      const expCtx = expCanvas.getContext('2d');
+      const chromaOff = document.createElement('canvas');
+      const chromaOffCtx = chromaOff.getContext('2d', { willReadFrequently: true });
 
-  rec.start();
-  const exportStart = performance.now();
-  const frameMs     = 1000 / FPS;
-  let   lastFrameTs = performance.now();
+      const stream = expCanvas.captureStream(FPS);
+      let ms = stream;
+      let audioCtx = null;
 
-  function rafTick(now) {
-    const elapsed = (now - exportStart) / 1000;
+      if (APP.musicLoaded && APP.musicBuffer) {
+        try {
+          audioCtx = new AudioContext();
+          const dest = audioCtx.createMediaStreamDestination();
+          const dec  = await audioCtx.decodeAudioData(APP.musicBuffer.slice(0));
+          const src  = audioCtx.createBufferSource();
+          src.buffer = dec;
+          src.loop   = false;
+          src.start(0);
+          src.connect(dest);
+          ms = new MediaStream([...stream.getTracks(), ...dest.stream.getTracks()]);
+        } catch(e) { console.warn('Audio export failed:', e); }
+      }
 
-    if (elapsed >= DURATION) {
-      setTimeout(() => rec.stop(), 200);
-      return;
-    }
+      const mp4Ok = MediaRecorder.isTypeSupported('video/mp4;codecs=avc1');
+      const vp9Ok = MediaRecorder.isTypeSupported('video/webm;codecs=vp9');
+      const mime  = mp4Ok ? 'video/mp4;codecs=avc1' : vp9Ok ? 'video/webm;codecs=vp9' : 'video/webm';
+      const ext   = mp4Ok ? 'mp4' : 'webm';
 
-    // Throttle to FPS rate — gives the video decoder breathing room between frames
-    // and prevents spamming play() calls while seeking
-    if (now - lastFrameTs < frameMs - 1) {
+      const rec    = new MediaRecorder(ms, { mimeType: mime, videoBitsPerSecond: 8_000_000 });
+      const chunks = [];
+      rec.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+
+      rec.onstop = () => {
+        if (audioCtx) audioCtx.close().catch(() => {});
+        const blob = new Blob(chunks, { type: mime });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `vidiclip_${titleSlug}${filenameSuffix}.${ext}`;
+        a.click();
+        if (isFullVideo) { APP.exportedBlob = blob; APP.exportedMime = mime; APP.exportedTitle = titleSlug; }
+        resolve({ blob, ext });
+      };
+
+      // Rewind character video for each clip
+      charVideo.currentTime = 0;
+
+      rec.start();
+      const exportStart = performance.now();
+      const frameMs = 1000 / FPS;
+      let lastFrameTs = performance.now();
+
+      function rafTick(now) {
+        const elapsed = (now - exportStart) / 1000;
+        if (elapsed >= duration) { setTimeout(() => rec.stop(), 200); return; }
+
+        if (now - lastFrameTs < frameMs - 1) { requestAnimationFrame(rafTick); return; }
+        lastFrameTs = now;
+
+        if (APP.charLoaded && charVideo.paused && !charVideo.seeking) charVideo.play().catch(() => {});
+
+        expCtx.clearRect(0, 0, expW, expH);
+        if (story && story._bgImg) expCtx.drawImage(story._bgImg, 0, 0, expW, expH);
+        if (APP.bgDarken > 0) { expCtx.fillStyle = `rgba(0,0,0,${APP.bgDarken})`; expCtx.fillRect(0, 0, expW, expH); }
+
+        if (APP.charLoaded && charVideo.readyState >= 2) {
+          const vw = charVideo.videoWidth, vh = charVideo.videoHeight;
+          const sc = APP.charScale;
+          const fw = expW * sc, fh = (fw / vw) * vh;
+          const ox = (expW - fw) / 2, oy = expH - fh;
+          chromaOff.width = Math.round(fw); chromaOff.height = Math.round(fh);
+          chromaOffCtx.drawImage(charVideo, 0, 0, chromaOff.width, chromaOff.height);
+          const id = chromaOffCtx.getImageData(0, 0, chromaOff.width, chromaOff.height);
+          applyChromaKey(id);
+          chromaOffCtx.putImageData(id, 0, 0);
+          expCtx.drawImage(chromaOff, ox, oy, fw, fh);
+        }
+
+        drawTextAt1080(expCtx, expW, expH);
+
+        const pct = Math.min(99, Math.round((elapsed / duration) * 100));
+        epf.style.width = pct + '%';
+        epl.textContent = `${labelPrefix} ${pct}% · ${ext.toUpperCase()}`;
+
+        requestAnimationFrame(rafTick);
+      }
       requestAnimationFrame(rafTick);
-      return;
-    }
-    lastFrameTs = now;
-
-    // Only call play() when truly paused — NOT during a seek (seeking also sets paused=true)
-    // Calling play() while seeking is what caused the race condition / freeze
-    if (APP.charLoaded && charVideo.paused && !charVideo.seeking) {
-      charVideo.play().catch(() => {});
-    }
-
-    // Draw bg
-    expCtx.clearRect(0, 0, expW, expH);
-    if (story && story._bgImg) expCtx.drawImage(story._bgImg, 0, 0, expW, expH);
-    if (APP.bgDarken > 0) { expCtx.fillStyle = `rgba(0,0,0,${APP.bgDarken})`; expCtx.fillRect(0,0,expW,expH); }
-
-    // Draw chroma char
-    if (APP.charLoaded && charVideo.readyState >= 2) {
-      const vw = charVideo.videoWidth, vh = charVideo.videoHeight;
-      const sc = APP.charScale;
-      const fw = expW * sc, fh = (fw / vw) * vh;
-      const ox = (expW - fw) / 2, oy = expH - fh;
-      chromaOff.width  = Math.round(fw);
-      chromaOff.height = Math.round(fh);
-      chromaOffCtx.drawImage(charVideo, 0, 0, chromaOff.width, chromaOff.height);
-      const id = chromaOffCtx.getImageData(0, 0, chromaOff.width, chromaOff.height);
-      applyChromaKey(id);
-      chromaOffCtx.putImageData(id, 0, 0);
-      expCtx.drawImage(chromaOff, ox, oy, fw, fh);
-    }
-
-    // Draw text at 1080x1920 scale
-    drawTextAt1080(expCtx, expW, expH);
-
-    const pct = Math.min(99, Math.round((elapsed / DURATION) * 100));
-    epf.style.width = pct + '%';
-    epl.textContent = `Exportando... ${pct}% · ${ext.toUpperCase()}`;
-
-    requestAnimationFrame(rafTick);
+    });
   }
+  // ── end helper ──────────────────────────────────────────────────────────
 
-  requestAnimationFrame(rafTick);
+  const results = [];
+  if (doFull)  results.push(await doVideoExport(audioDuration,            '',         `Video completo...`,   true));
+  if (doShort) results.push(await doVideoExport(Math.min(shortSecs, audioDuration), `_${shortSecs}s`, `Video corto (${shortSecs}s)...`, false));
+
+  // Restore character video and render loop
+  if (APP.charLoaded) { charVideo.loop = false; charVideo.pause(); }
+  startRenderLoop();
+  epw.style.display = 'none';
+
+  if (doCover) await autoExportCover(titleSlug);
+
+  // Update Notion if "Programado" is checked
+  const chkSchedule = document.getElementById('chkScheduleExport');
+  if (chkSchedule?.checked && story?.id) {
+    const schedDate = document.getElementById('scheduleExportDate').value;
+    try {
+      await updateNotionStatus(story.id, 'Programado', schedDate || null, 'Fecha programado');
+      toast(`Exportación completa ✓ — Notion actualizado`, 'success');
+    } catch(e) {
+      const isWarning = e.message.includes('agrégalo manualmente') || e.message.includes('verifica');
+      toast(`Exportado ✓ — Notion: ${e.message}`, isWarning ? '' : 'error');
+    }
+  } else {
+    const parts = [doFull && 'video completo', doShort && `clip ${shortSecs}s`, doCover && 'portada'].filter(Boolean);
+    toast(`Exportado ✓ — ${parts.join(', ')}`, 'success');
+  }
 }
 
 // ════════════════════════════════════════════════════
