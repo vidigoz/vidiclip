@@ -1511,8 +1511,8 @@ async function exportVideo() {
   // ── end helper ──────────────────────────────────────────────────────────
 
   const results = [];
-  if (doFull)  results.push(await doVideoExport(audioDuration,            '',         `Video completo...`,   true));
-  if (doShort) results.push(await doVideoExport(Math.min(shortSecs, audioDuration), `_${shortSecs}s`, `Video corto (${shortSecs}s)...`, false));
+  if (doFull)  results.push(await doVideoExport(audioDuration,                          '_tiktok', `TikTok...`,           true));
+  if (doShort) results.push(await doVideoExport(Math.min(shortSecs, audioDuration), '_reel',   `Reel (${shortSecs}s)...`, false));
 
   // Restore character video and render loop
   if (APP.charLoaded) { charVideo.loop = false; charVideo.pause(); }
